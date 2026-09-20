@@ -8,38 +8,60 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 2. URL Sumber Resmi & Konfigurasi Sekolah
-# Menggunakan Mirror Resmi SourceForge SEB 3.8.0 (SetupBundle lengkap)
-$sebInstallerUrl = "https://downloads.sourceforge.net/project/seb/seb/SEB_3.8.0/SEB_3.8.0.741_SetupBundle.exe"
+# 2. URL Resmi SEB Windows (v3.10.2) & Konfigurasi Sekolah
+$sebInstallerUrl = "https://github.com/SafeExamBrowser/seb-win-refactoring/releases/download/v3.10.2/SEB_3.10.2.920_SetupBundle.exe"
+$sebFallbackUrl  = "https://sourceforge.net/projects/seb/files/seb/SEB_3.10.2/SEB_3.10.2.920_SetupBundle.exe/download"
 $sebConfigUrl    = "https://raw.githubusercontent.com/tkjtani/seb-ujian/refs/heads/main/SebClientSettings.seb"
 
 $tmp    = "$env:TEMP\seb-deploy"
 $cfgDir = "C:\ProgramData\SEB"
 New-Item -ItemType Directory -Force -Path $tmp, $cfgDir | Out-Null
 
-# Fungsi download yang stabil (mengikuti redirect dan menampilkan progres)
-function Download-FileSafe ($url, $outputPath) {
+# Fungsi download tangguh (mencoba link utama, jika gagal pakai fallback)
+function Download-FileSafe ($primaryUrl, $fallbackUrl, $outputPath) {
+    $downloadSuccess = $false
+
+    # Coba URL Utama
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-        & curl.exe -f -L --retry 3 -o $outputPath $url
-        if ($LASTEXITCODE -ne 0) { throw "Gagal mengunduh dari $url (Exit code: $LASTEXITCODE)" }
-    } else {
+        Write-Host "Mengunduh dari server utama..." -ForegroundColor DarkCyan
+        & curl.exe -f -L --retry 2 -o $outputPath $primaryUrl
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $outputPath) -and (Get-Item $outputPath).Length -gt 1000000) {
+            $downloadSuccess = $true
+        }
+    }
+
+    # Jika gagal, coba URL Fallback
+    if (-not $downloadSuccess -and $fallbackUrl) {
+        Write-Host "Server utama gagal, beralih ke mirror cadangan..." -ForegroundColor Yellow
+        & curl.exe -f -L --retry 2 -o $outputPath $fallbackUrl
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $outputPath) -and (Get-Item $outputPath).Length -gt 1000000) {
+            $downloadSuccess = $true
+        }
+    }
+
+    # Fallback terakhir menggunakan .NET WebClient jika curl bermasalah
+    if (-not $downloadSuccess) {
+        Write-Host "Mencoba metode WebClient..." -ForegroundColor Yellow
         $wc = New-Object System.Net.WebClient
         $wc.Headers.Add("User-Agent", "Mozilla/5.0")
-        $wc.DownloadFile($url, $outputPath)
+        $target = if ($fallbackUrl) { $fallbackUrl } else { $primaryUrl }
+        $wc.DownloadFile($target, $outputPath)
+        if ((Test-Path $outputPath) -and (Get-Item $outputPath).Length -gt 1000000) {
+            $downloadSuccess = $true
+        }
+    }
+
+    if (-not $downloadSuccess) {
+        throw "Gagal mengunduh file dari semua sumber yang tersedia."
     }
 }
 
 # 3. Download Installer & Konfigurasi
 Write-Host "[1/4] Mengunduh SEB Installer (~180 MB, mohon tunggu)..." -ForegroundColor Cyan
-Download-FileSafe $sebInstallerUrl "$tmp\SEB_Setup.exe"
-
-# Pastikan file installer benar-benar ada sebelum lanjut
-if (-not (Test-Path "$tmp\SEB_Setup.exe")) {
-    throw "File SEB_Setup.exe gagal diunduh."
-}
+Download-FileSafe $sebInstallerUrl $sebFallbackUrl "$tmp\SEB_Setup.exe"
 
 Write-Host "[2/4] Mengunduh File Konfigurasi Ujian..." -ForegroundColor Cyan
-Download-FileSafe $sebConfigUrl "$cfgDir\SebClientSettings.seb"
+& curl.exe -f -L -s -S -o "$cfgDir\SebClientSettings.seb" $sebConfigUrl
 
 # 4. Instalasi Hening (Silent Install)
 Write-Host "[3/4] Menginstal Safe Exam Browser di latar belakang..." -ForegroundColor Cyan
@@ -59,4 +81,4 @@ $lnk.Save()
 
 # Bersihkan file temporary installer
 Remove-Item $tmp -Recurse -Force
-Write-Host "SUKSES: Safe Exam Browser dan konfigurasi berhasil terpasang!" -ForegroundColor Green
+Write-Host "SUKSES: Safe Exam Browser dan konfigurasi ujian berhasil terpasang!" -ForegroundColor Green
